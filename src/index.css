@@ -1,0 +1,12 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-serif: "Cinzel", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+body {
+  @apply bg-stone-900 text-stone-100;
+}

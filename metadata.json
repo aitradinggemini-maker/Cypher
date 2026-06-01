@@ -1,0 +1,6 @@
+{
+  "name": "Cipher Diary",
+  "description": "Encode and decode a custom code language for your diary. Upload photos of encoded text to decipher them into English.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

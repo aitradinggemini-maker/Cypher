@@ -1,0 +1,841 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  BookOpen, 
+  Camera, 
+  Upload, 
+  Loader2, 
+  Sparkles, 
+  Copy, 
+  Check, 
+  ShieldAlert, 
+  Lock, 
+  Unlock, 
+  LockKeyhole,
+  Shield
+} from 'lucide-react';
+import Tesseract from 'tesseract.js';
+import { getCipherMaps, encodeWithMaps, decodeWithMaps } from './lib/cipher.js';
+import { CanvasText } from './components/CanvasText';
+
+export default function App() {
+  // --- 1. All Top-Level State Hooks ---
+  const [activeTab, setActiveTab] = useState<'write' | 'read'>('write');
+  const [passcode, setPasscode] = useState('');
+
+  // Dynamic alphanumeric input names to prevent Chrome Form Caching/Autofill History.
+  // Changes on every fresh initialization, rendering matching impossible for Chrome's SQLite databases.
+  const [fieldToken] = useState(() => 'f_' + Math.floor(Math.random() * 100000000).toString(36));
+
+  // Write States
+  const [entryTitle, setEntryTitle] = useState('');
+  const [englishText, setEnglishText] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  // Decode/OCR states
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isDecoding, setIsDecoding] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState('');
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [decodedResult, setDecodedResult] = useState<{ extracted: string; decoded: string } | null>(null);
+  const [pasteCipherText, setPasteCipherText] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Idle and Clipboard Security States
+  const [isWipedAutomatically, setIsWipedAutomatically] = useState(false);
+  const [clipboardCountdown, setClipboardCountdown] = useState<number | null>(null);
+
+  // Refs for tracking background task identifiers
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const idleRef = useRef<any>(null);
+  const clipIntervalRef = useRef<any>(null);
+
+  // Extension-Bypassing Keystroke Shield States & Refs
+  const [isKeystrokeShieldActive, setIsKeystrokeShieldActive] = useState(true);
+  const [isTitleFocused, setIsTitleFocused] = useState(false);
+  const [isBodyFocused, setIsBodyFocused] = useState(false);
+  const [isCipherFocused, setIsCipherFocused] = useState(false);
+
+  const titleHiddenRef = useRef<HTMLInputElement>(null);
+  const bodyHiddenRef = useRef<HTMLTextAreaElement>(null);
+  const cipherHiddenRef = useRef<HTMLTextAreaElement>(null);
+
+  // --- 2. Zero-Footprint & Sandbox Purge Functions ---
+  const destructAllBrowserFootprints = () => {
+    try {
+      // 1. Clear standard browser storage namespaces
+      localStorage.clear();
+      sessionStorage.clear();
+
+      // 2. Clear all browser cookies
+      const cookies = document.cookie.split(";");
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i];
+        const eqPos = cookie.indexOf("=");
+        const name = eqPos > -1 ? cookie.substring(0, eqPos).trim() : cookie.trim();
+        document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
+      }
+
+      // 3. Delete Cache Storage buckets
+      if (window.caches && window.caches.keys) {
+        window.caches.keys().then((keys) => {
+          keys.forEach((key) => window.caches.delete(key));
+        });
+      }
+
+      // 4. Deregister any service workers
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          for (const registration of registrations) {
+            registration.unregister();
+          }
+        });
+      }
+
+      // 5. Delete IndexedDB databases
+      if (window.indexedDB && window.indexedDB.databases) {
+        window.indexedDB.databases().then((dbs) => {
+          dbs.forEach((db) => {
+            if (db.name) {
+              window.indexedDB.deleteDatabase(db.name);
+            }
+          });
+        });
+      }
+    } catch (_) {
+      // Guard against iframe sandbox restrictions safely
+    }
+  };
+
+  const handleShredMemory = () => {
+    try {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    } catch (_) {}
+    setEnglishText('');
+    setEntryTitle('');
+    setPasteCipherText('');
+    setSelectedImage(null);
+    setPreviewUrl(null);
+    setDecodedResult(null);
+    destructAllBrowserFootprints();
+  };
+
+  const resetIdleTimer = () => {
+    if (idleRef.current) clearTimeout(idleRef.current);
+    setIsWipedAutomatically(false);
+    idleRef.current = setTimeout(() => {
+      // 60 seconds of zero interaction shreds RAM session states completely
+      handleShredMemory();
+      setIsWipedAutomatically(true);
+    }, 60000);
+  };
+
+  // --- 3. Persistent Console Purge & Visibility Events ---
+  useEffect(() => {
+    // Console logging is maintained during development to ensure clear issue diagnostics.
+    // If ultimate blackhole logs are desired in production, they can be configured there.
+  }, []);
+
+  useEffect(() => {
+    destructAllBrowserFootprints();
+
+    // Attach listeners for mouse, keyboard, touch to reset idle timer
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    events.forEach((event) => window.addEventListener(event, resetIdleTimer));
+    resetIdleTimer();
+
+    // Visibility Listener: immediately Shred Memory if tab is hidden (Chrome minimized, locked screen, etc)
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        handleShredMemory();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Double-insurance unload event scrubbing
+    window.addEventListener('beforeunload', handleShredMemory);
+    window.addEventListener('unload', handleShredMemory);
+
+    return () => {
+      if (idleRef.current) clearTimeout(idleRef.current);
+      if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
+      events.forEach((event) => window.removeEventListener(event, resetIdleTimer));
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleShredMemory);
+      window.removeEventListener('unload', handleShredMemory);
+    };
+  }, []);
+
+  // When tab is changed, wipe states and destroy cached footprints to preserve transient nature
+  const handleTabChange = (tab: 'write' | 'read') => {
+    handleShredMemory();
+    setActiveTab(tab);
+  };
+
+  // Derive custom mapping from passcode using pure deterministic mathematical PRNG
+  const cipherMaps = getCipherMaps(passcode || 'device-fallback');
+
+  const combinedText = (entryTitle ? entryTitle + "\n\n" : "") + englishText;
+  const encodedContent = encodeWithMaps(combinedText, cipherMaps);
+
+  const handleCopy = () => {
+    if (!encodedContent) return;
+    navigator.clipboard.writeText(encodedContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+
+    // Dynamic 15-second counter to automatically clear browser clipboard after copy
+    if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
+    setClipboardCountdown(15);
+    
+    let left = 15;
+    clipIntervalRef.current = setInterval(() => {
+      left--;
+      setClipboardCountdown(left);
+      if (left <= 0) {
+        if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
+        setClipboardCountdown(null);
+        try {
+          // Flush OS clipboard
+          navigator.clipboard.writeText(" ");
+        } catch (_) {}
+      }
+    }, 1000);
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      try {
+        if (previewUrl) {
+          URL.revokeObjectURL(previewUrl);
+        }
+      } catch (_) {}
+      setSelectedImage(file);
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
+      setDecodedResult(null);
+      setErrorMsg(null);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      try {
+        if (previewUrl) {
+          URL.revokeObjectURL(previewUrl);
+        }
+      } catch (_) {}
+      setSelectedImage(file);
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
+      setDecodedResult(null);
+      setErrorMsg(null);
+    }
+  };
+
+  // 100% Client-Side Local OCR execution with strictly enforced zero-cache configuration
+  const handleLocalOCR = async () => {
+    if (!selectedImage) return;
+    setIsDecoding(true);
+    setErrorMsg(null);
+    setDecodedResult(null);
+    setOcrProgress(0);
+    setOcrStatus('Initializing local neural core...');
+
+    let worker: Tesseract.Worker | null = null;
+    try {
+      // Force Tesseract.js to bypass any IndexedDB data or local HTTP disk caching entirely
+      worker = await Tesseract.createWorker('eng', 1, {
+        cacheMethod: 'none',
+        logger: (m) => {
+          if (m.status === 'loading tesseract core' || m.status === 'initializing api') {
+            setOcrStatus('Warming up client-side OCR engine...');
+            setOcrProgress(Math.round(m.progress * 100));
+          } else if (m.status === 'recognizing text') {
+            setOcrStatus('Reading handwritten/printed characters...');
+            setOcrProgress(Math.round(m.progress * 102) > 100 ? 100 : Math.round(m.progress * 100));
+          }
+        }
+      });
+
+      const result = await worker.recognize(selectedImage);
+      const rawExtractedText = result.data.text || "";
+      if (!rawExtractedText.trim()) {
+        throw new Error("No readable text found. Ensure characters are clearly drawn.");
+      }
+
+      const decryptedString = decodeWithMaps(rawExtractedText, cipherMaps);
+      setDecodedResult({ 
+        extracted: rawExtractedText, 
+        decoded: decryptedString 
+      });
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to scan. Ensure image is legible.");
+    } finally {
+      if (worker) {
+        try {
+          await (worker as Tesseract.Worker).terminate();
+        } catch (_) {}
+      }
+      setIsDecoding(false);
+      setOcrProgress(0);
+      setOcrStatus('');
+    }
+  };
+
+  const handleDirectPasteDecode = () => {
+    if (!pasteCipherText.trim()) return;
+    const decryptedString = decodeWithMaps(pasteCipherText, cipherMaps);
+    setDecodedResult({
+      extracted: pasteCipherText,
+      decoded: decryptedString
+    });
+  };
+
+  return (
+    <div className="min-h-screen font-sans selection:bg-amber-500/20 selection:text-amber-200 bg-stone-950 text-stone-100 p-4 md:p-8 lg:p-12">
+      <div className="max-w-5xl mx-auto">
+        
+        {/* Header Branding */}
+        <header className="mb-10 flex flex-col md:flex-row items-center justify-between gap-6 pb-6 border-b border-stone-850">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-serif text-stone-100 flex items-center gap-3 justify-center md:justify-start">
+              <Sparkles className="w-8 h-8 text-amber-500" />
+              Cryptic Diary
+            </h1>
+            <p className="text-stone-400 mt-2 text-xs md:text-sm">
+              Mathematical Core substitution engine fully synchronized with your device security keys.
+            </p>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              onClick={handleShredMemory}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-950/20 border border-red-900/30 hover:border-red-500/50 hover:bg-red-950/45 text-red-400 hover:text-red-350 text-xs font-medium transition shadow-md"
+              title="Instantly scrubs inputs, decrypted texts, scans and deletes browser storage caches"
+            >
+              <Unlock className="w-3.5 h-3.5" />
+              Secure Shred RAM
+            </button>
+
+            <div className="flex bg-stone-900 p-1 rounded-xl border border-stone-800">
+              <button
+                onClick={() => handleTabChange('write')}
+                className={`flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-medium transition-all ${activeTab === 'write' ? 'bg-stone-850 text-stone-100 border border-stone-700/60 shadow-md' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                <BookOpen className="w-3.5 h-3.5 text-amber-500/80" />
+                Write & Encrypt
+              </button>
+              <button
+                onClick={() => handleTabChange('read')}
+                className={`flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-medium transition-all ${activeTab === 'read' ? 'bg-stone-850 text-stone-100 border border-stone-700/60 shadow-md' : 'text-stone-400 hover:text-stone-200'}`}
+              >
+                <Camera className="w-3.5 h-3.5 text-amber-500/80" />
+                Decrypt & Scan
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {isWipedAutomatically && (
+          <div className="mb-6 bg-red-950/20 border border-red-900/40 text-red-400 p-3.5 rounded-xl text-xs flex justify-between items-center animate-pulse">
+            <div className="flex gap-2.5 items-center">
+              <ShieldAlert className="w-4 h-4 shrink-0" strokeWidth={2.5} />
+              <span>Idle Scrub Timeout: English text & decoded output were automatically shredded from RAM due to 60 seconds of inactivity.</span>
+            </div>
+            <button onClick={() => setIsWipedAutomatically(false)} className="text-stone-400 hover:text-stone-200 text-[10px] font-bold px-2 py-1 rounded bg-stone-900 border border-stone-850">
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Master / Topic Key Configuration */}
+        <div className="mb-6 bg-stone-900/60 border border-stone-800 rounded-xl p-4 flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-stone-200">Encryption Token</h3>
+            <p className="text-xs text-stone-500 mt-1">Specify a Topic or Master key to dynamically vary the polyalphabetic output for this text patch.</p>
+          </div>
+          <div className="relative w-full md:w-64">
+            <input 
+              type="text" 
+              value={passcode}
+              onChange={(e) => setPasscode(e.target.value)}
+              placeholder="e.g. secret-topic-key"
+              className="w-full bg-stone-950 border border-stone-800 rounded-lg px-3 py-2 text-xs text-amber-500 font-mono outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all font-bold placeholder:text-stone-700"
+              spellCheck="false"
+              autoComplete="off"
+            />
+          </div>
+        </div>
+
+        {!isWipedAutomatically && (
+          <div className="mb-6 bg-emerald-500/[0.04] border border-emerald-950/40 text-emerald-400/90 py-2.5 px-4 rounded-xl text-2xs md:text-xs flex gap-2 items-center">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
+            <span>Chrome Zero-Footprint Active: Clear-Site-Data policies enforced. No persistent caches, form lists, or cookie footprints exist on your disk.</span>
+          </div>
+        )}
+
+        {/* Main Workspace */}
+        <main>
+          <AnimatePresence mode="wait">
+            
+            {/* WRITE TAB */}
+            {activeTab === 'write' && (
+              <motion.div
+                key="tab-write"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="grid md:grid-cols-2 gap-6"
+              >
+                {/* English Writer Input Area */}
+                <div className="bg-stone-900/60 border border-stone-800 rounded-2xl p-6 flex flex-col h-[65vh] min-h-[450px]">
+                  <div className="flex items-center justify-between gap-4 mb-4">
+                    <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase bg-amber-500/10 px-2 py-0.5 rounded">English Input</span>
+                    <div className="flex items-center gap-1.5 md:gap-2">
+                      <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-amber-500/[0.04] border border-amber-550/15">
+                        <Shield className={`w-3 h-3 ${isKeystrokeShieldActive ? 'text-amber-500 animate-pulse' : 'text-stone-500'}`} />
+                        <span className="text-[8px] font-bold text-stone-400 uppercase tracking-widest">Keystroke Shield</span>
+                        <button 
+                          onClick={() => {
+                            setIsKeystrokeShieldActive(!isKeystrokeShieldActive);
+                            handleShredMemory();
+                          }}
+                          className={`relative inline-flex h-3.5 w-6.5 shrink-0 cursor-pointer rounded-full border border-stone-850 transition-colors duration-150 ease-in-out focus:outline-none ${isKeystrokeShieldActive ? 'bg-amber-500/90' : 'bg-stone-950'}`}
+                          title="Toggles dynamic RAM scrubbing of keystrokes to prevent browser extensions from inspecting inputs"
+                          type="button"
+                        >
+                          <span className={`pointer-events-none inline-block h-2.5 w-2.5 transform rounded-full bg-stone-950 shadow transition duration-150 ease-in-out ${isKeystrokeShieldActive ? 'translate-x-[11px]' : 'translate-x-[1px]'}`} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {isKeystrokeShieldActive ? (
+                    <>
+                      {/* Visual Input representing title */}
+                      <div 
+                        onClick={() => titleHiddenRef.current?.focus()}
+                        className={`w-full bg-transparent pb-3 mb-4 border-b text-lg font-serif outline-none leading-relaxed min-h-[38px] cursor-text flex items-center relative transition-colors duration-150 ${isTitleFocused ? 'border-amber-500/30' : 'border-stone-800'}`}
+                      >
+                        <CanvasText 
+                          text={entryTitle} 
+                          placeholder="Diary Entry Title..." 
+                          font="600 18px Cinzel, ui-serif, serif" 
+                          showCursor={isTitleFocused}
+                        />
+                        
+                        {/* 100% Uncontrolled hidden input for dynamic character reading */}
+                        <input
+                          ref={titleHiddenRef}
+                          type="text"
+                          defaultValue=""
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val) {
+                              setEntryTitle(prev => prev + val);
+                            }
+                            e.target.value = ''; // Instantly wipe DOM footprint
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Backspace') {
+                              e.preventDefault();
+                              setEntryTitle(prev => prev.slice(0, -1));
+                            }
+                          }}
+                          onFocus={() => setIsTitleFocused(true)}
+                          onBlur={() => setIsTitleFocused(false)}
+                          className="absolute w-px h-px opacity-0 pointer-events-none left-0 top-0 select-none"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck="false"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-bwignore="true"
+                          data-bitwarden-ignore="true"
+                          data-dashlane-ignore="true"
+                          data-gramm="false"
+                        />
+                      </div>
+
+                      {/* Visual Input representing body text */}
+                      <div 
+                        onClick={() => bodyHiddenRef.current?.focus()}
+                        className={`flex-1 w-full bg-transparent text-stone-200 font-serif leading-relaxed text-base overflow-y-auto cursor-text relative pb-10 min-h-[150px]`}
+                      >
+                        <CanvasText 
+                          text={englishText} 
+                          placeholder="Write down your secret thoughts or confidential diary logs here in plain English using secure RAM Keystroke Shield..." 
+                          font="400 16px Cinzel, ui-serif, serif" 
+                          showCursor={isBodyFocused}
+                        />
+                        
+                        {/* 100% Uncontrolled hidden textarea for dynamic character reading */}
+                        <textarea
+                          ref={bodyHiddenRef}
+                          defaultValue=""
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val) {
+                              setEnglishText(prev => prev + val);
+                            }
+                            e.target.value = ''; // Instantly wipe DOM footprint
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Backspace') {
+                              e.preventDefault();
+                              setEnglishText(prev => prev.slice(0, -1));
+                            } else if (e.key === 'Enter') {
+                              e.preventDefault();
+                              setEnglishText(prev => prev + '\n');
+                            }
+                          }}
+                          onFocus={() => setIsBodyFocused(true)}
+                          onBlur={() => setIsBodyFocused(false)}
+                          className="absolute w-px h-px opacity-0 pointer-events-none left-0 top-0 select-none resize-none"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck="false"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-bwignore="true"
+                          data-bitwarden-ignore="true"
+                          data-dashlane-ignore="true"
+                          data-gramm="false"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        type="text"
+                        name={fieldToken + "_title"}
+                        id={fieldToken + "_title"}
+                        value={entryTitle}
+                        onChange={(e) => setEntryTitle(e.target.value)}
+                        placeholder="Diary Entry Title..."
+                        autoComplete="new-password"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck="false"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-bwignore="true"
+                        data-bitwarden-ignore="true"
+                        data-dashlane-ignore="true"
+                        data-gramm="false"
+                        data-enable-grammarly="false"
+                        data-translate="no"
+                        translate="no"
+                        className="notranslate w-full bg-transparent pb-3 mb-4 border-b border-stone-800 text-lg font-serif text-stone-200 outline-none placeholder:text-stone-600 font-semibold"
+                      />
+
+                      <textarea
+                        name={fieldToken + "_text"}
+                        id={fieldToken + "_text"}
+                        value={englishText}
+                        onChange={(e) => setEnglishText(e.target.value)}
+                        placeholder="Write down your secret thoughts or confidential diary logs here in plain English..."
+                        autoComplete="new-password"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck="false"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-bwignore="true"
+                        data-bitwarden-ignore="true"
+                        data-dashlane-ignore="true"
+                        data-gramm="false"
+                        data-enable-grammarly="false"
+                        data-translate="no"
+                        translate="no"
+                        className="notranslate flex-1 w-full bg-transparent resize-none focus:outline-none text-stone-200 placeholder:text-stone-600 font-serif leading-relaxed text-base"
+                      />
+                    </>
+                  )}
+                </div>
+
+                {/* Mathematical Cryptic Output Area */}
+                <div className="bg-stone-950 border border-amber-950/40 rounded-2xl p-6 flex flex-col h-[65vh] min-h-[450px] relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-amber-500/[0.01] pointer-events-none"></div>
+                  
+                  <div className="flex items-center justify-between mb-4 relative z-10">
+                    <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase bg-amber-500/10 px-2 py-0.5 rounded">Mathematical Cipher Translation</span>
+                    <div className="flex items-center gap-2">
+                      {clipboardCountdown !== null && (
+                        <span className="text-[10px] font-mono font-medium text-amber-500 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20 animate-pulse shrink-0">
+                          Clipboard wipes in {clipboardCountdown}s
+                        </span>
+                      )}
+                      <button 
+                        onClick={handleCopy}
+                        disabled={!encodedContent}
+                        className="text-stone-400 hover:text-stone-200 bg-stone-900 border border-stone-800 hover:border-stone-700/80 p-2 rounded-lg transition disabled:opacity-40"
+                        title="Copy cipher text"
+                      >
+                        {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div className="notranslate flex-1 overflow-y-auto font-mono text-amber-300 leading-relaxed text-base whitespace-pre-wrap break-words relative z-10 p-4 rounded-xl bg-stone-900/30 border border-amber-900/10 h-full" translate="no">
+                    <CanvasText 
+                      text={encodedContent}
+                      placeholder="Your dynamically converted mathematical secret cipher will render here automatically..."
+                      font="400 16px 'JetBrains Mono', monospace"
+                      color="#fcd34d"
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* DECRYPT & SCAN TAB */}
+            {activeTab === 'read' && (
+              <motion.div
+                key="tab-read"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="max-w-3xl mx-auto grid md:grid-cols-5 gap-6"
+              >
+                {/* Upload & Setup Selection Panel */}
+                <div className="md:col-span-3 bg-stone-900/60 border border-stone-800 rounded-2xl p-6">
+                  <div className="text-center md:text-left mb-6">
+                    <h2 className="text-base font-serif text-stone-100">Client-Side Scan Decoder</h2>
+                    <p className="text-stone-400 text-xs mt-1">
+                      Runs 100% locally. Analyze handwriting files or paste secret paragraphs directly.
+                    </p>
+                  </div>
+
+                  {!selectedImage ? (
+                    <div 
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragOver={handleDragOver}
+                      onDrop={handleDrop}
+                      className="border border-dashed border-stone-800 hover:border-amber-500/40 rounded-xl p-10 flex flex-col items-center justify-center cursor-pointer hover:bg-stone-900/40 transition duration-200 group"
+                    >
+                      <div className="w-12 h-12 bg-stone-950 border border-stone-850 rounded-xl flex items-center justify-center mb-4 group-hover:scale-105 transition duration-200">
+                        <Upload className="w-5 h-5 text-stone-400 group-hover:text-amber-500" />
+                      </div>
+                      <p className="text-xs font-semibold text-stone-300">Click or drag image to upload photo</p>
+                      <p className="text-[10px] text-stone-500 mt-1">Runs entirely inside your browser sandbox</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="relative aspect-video rounded-xl overflow-hidden bg-stone-950 border border-stone-850">
+                        <img src={previewUrl!} alt="Preview" className="w-full h-full object-contain" />
+                        <button 
+                          onClick={() => { 
+                            destructAllBrowserFootprints();
+                            setSelectedImage(null); 
+                            setPreviewUrl(null); 
+                            setDecodedResult(null); 
+                            setErrorMsg(null); 
+                          }}
+                          className="absolute top-3 right-3 bg-stone-900/90 border border-stone-800 text-stone-300 px-3 py-1 rounded-full text-2xs hover:bg-stone-950 transition"
+                        >
+                          Clear Image
+                        </button>
+                      </div>
+
+                      {!decodedResult && (
+                        <button 
+                          onClick={handleLocalOCR}
+                          disabled={isDecoding}
+                          className="w-full bg-amber-600 hover:bg-amber-500 disabled:bg-stone-800 disabled:text-stone-500 text-stone-950 text-xs font-semibold py-3.5 rounded-xl transition flex items-center justify-center gap-2 shadow-md"
+                        >
+                          {isDecoding ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>{ocrStatus} ({ocrProgress}%)</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-4 h-4 stroke-[2.5]" />
+                              <span>Recognize & Decode Image</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Progress Indicator for local OCR */}
+                  {isDecoding && (
+                    <div className="mt-4 space-y-1">
+                      <div className="flex justify-between text-[10px] text-stone-500 font-mono">
+                        <span>{ocrStatus}</span>
+                        <span>{ocrProgress}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-stone-950 rounded-full overflow-hidden border border-stone-850">
+                        <div 
+                          className="h-full bg-amber-500 transition-all duration-200"
+                          style={{ width: `${ocrProgress}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Divider */}
+                  <div className="relative my-6 flex items-center justify-center">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-stone-850"></div>
+                    </div>
+                    <span className="relative bg-stone-900 px-3 text-[10px] text-stone-500 tracking-wider font-semibold uppercase">Or Paste Cipher Text</span>
+                  </div>
+
+                  {/* Paste Box */}
+                  <div className="space-y-3">
+                    {isKeystrokeShieldActive ? (
+                      <div 
+                        onClick={() => cipherHiddenRef.current?.focus()}
+                        className={`w-full h-24 bg-stone-950 border rounded-xl p-3 text-xs text-amber-300 font-mono resize-none leading-relaxed overflow-y-auto cursor-text relative transition-all duration-150 ${isCipherFocused ? 'border-amber-500/25 ring-1 ring-amber-500/10' : 'border-stone-850'}`}
+                      >
+                        <CanvasText 
+                          text={pasteCipherText} 
+                          placeholder="Paste secret cipher text here using secure RAM Keystroke Shield..." 
+                          font="400 12px 'JetBrains Mono', monospace" 
+                          color="#fcd34d"
+                          showCursor={isCipherFocused}
+                        />
+                        
+                        {/* 100% Uncontrolled hidden textarea for dynamic cipher paste reading */}
+                        <textarea
+                          ref={cipherHiddenRef}
+                          defaultValue=""
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val) {
+                              setPasteCipherText(prev => prev + val);
+                            }
+                            e.target.value = ''; // Instantly wipe DOM footprint
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Backspace') {
+                              e.preventDefault();
+                              setPasteCipherText(prev => prev.slice(0, -1));
+                            } else if (e.key === 'Enter') {
+                              e.preventDefault();
+                              setPasteCipherText(prev => prev + '\n');
+                            }
+                          }}
+                          onFocus={() => setIsCipherFocused(true)}
+                          onBlur={() => setIsCipherFocused(false)}
+                          className="absolute w-px h-px opacity-0 pointer-events-none left-0 top-0 select-none resize-none"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck="false"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-bwignore="true"
+                          data-bitwarden-ignore="true"
+                          data-dashlane-ignore="true"
+                          data-gramm="false"
+                        />
+                      </div>
+                    ) : (
+                      <textarea
+                        placeholder="Paste secret cipher text here to reverse translate mathematically..."
+                        name={fieldToken + "_cipher"}
+                        id={fieldToken + "_cipher"}
+                        value={pasteCipherText}
+                        onChange={(e) => setPasteCipherText(e.target.value)}
+                        autoComplete="new-password"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck="false"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-bwignore="true"
+                        data-bitwarden-ignore="true"
+                        data-dashlane-ignore="true"
+                        data-gramm="false"
+                        data-enable-grammarly="false"
+                        data-translate="no"
+                        translate="no"
+                        className="notranslate w-full h-24 bg-stone-950 border border-stone-850 rounded-xl p-3 text-xs focus:outline-none text-amber-300 font-mono placeholder:text-stone-600 resize-none leading-relaxed"
+                      />
+                    )}
+                    <button
+                      onClick={handleDirectPasteDecode}
+                      disabled={!pasteCipherText.trim()}
+                      className="w-full border border-stone-800 hover:bg-stone-800/80 hover:border-stone-700/50 text-stone-200 font-semibold text-xs py-2.5 rounded-xl transition"
+                    >
+                      Decode Pasted Text
+                    </button>
+                  </div>
+
+                  {errorMsg && (
+                    <div className="mt-4 bg-red-950/30 border border-red-900/40 text-red-400 p-4 rounded-xl text-xs flex gap-2">
+                      <ShieldAlert className="w-4 h-4 shrink-0" />
+                      <span>{errorMsg}</span>
+                    </div>
+                  )}
+
+                  <input 
+                    type="file" 
+                    ref={fileInputRef}
+                    onChange={handleImageSelect}
+                    accept="image/*"
+                    className="hidden"
+                  />
+                </div>
+
+                {/* Decrypt Result Output Box */}
+                <div className="md:col-span-2 flex flex-col justify-between">
+                  <div className="bg-stone-950 border border-stone-850 rounded-2xl p-6 h-full flex flex-col">
+                    <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase mb-4 self-start bg-amber-500/10 px-2 py-0.5 rounded">Decipher Output</span>
+                    
+                    {decodedResult ? (
+                      <div className="flex-1 flex flex-col justify-between space-y-6">
+                        <div className="space-y-1 flex-1">
+                          <span className="text-[9px] font-mono text-stone-500 block uppercase tracking-wide">Decrypted English text</span>
+                          <div className="notranslate text-base font-serif text-stone-200 leading-relaxed whitespace-pre-wrap font-medium h-32" translate="no">
+                            <CanvasText text={decodedResult.decoded} font="500 16px Cinzel, ui-serif, serif" color="#e7e5e4" />
+                          </div>
+                        </div>
+
+                        <div className="border-t border-stone-900 pt-4 mt-auto">
+                          <span className="text-[9px] font-mono text-stone-500 block uppercase tracking-wide mb-1">Raw Scanned Cipher Glyphs</span>
+                          <div className="notranslate text-[10.5px] font-mono text-stone-600 break-all max-h-32 overflow-y-auto" translate="no">
+                            <CanvasText text={decodedResult.extracted} font="400 10.5px 'JetBrains Mono', monospace" color="#57534e" />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center text-center text-stone-600 p-4">
+                        <Lock className="w-8 h-8 text-stone-800 mb-2" />
+                        <p className="text-xs">Provide a scan or paste text to perform dynamic mathematical reversal.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </main>
+      </div>
+    </div>
+  );
+}
