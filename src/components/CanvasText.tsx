@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 interface CanvasTextProps {
   text: string;
@@ -21,6 +21,22 @@ export function CanvasText({
 }: CanvasTextProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  // Monitor container size dynamically via high-performance ResizeObserver
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
     let animationFrameId: number;
@@ -30,7 +46,10 @@ export function CanvasText({
     const renderCanvas = (time: number) => {
       const canvas = canvasRef.current;
       const container = containerRef.current;
-      if (!canvas || !container) return;
+      if (!canvas || !container || containerWidth <= 0) {
+        animationFrameId = requestAnimationFrame(renderCanvas);
+        return;
+      }
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -43,15 +62,6 @@ export function CanvasText({
 
       // Handle high DPI displays for sharp text
       const dpr = window.devicePixelRatio || 1;
-      const rect = container.getBoundingClientRect();
-      if (rect.width <= 0) {
-        animationFrameId = requestAnimationFrame(renderCanvas);
-        return;
-      }
-      
-      canvas.width = rect.width * dpr;
-      
-      // Calculate height based on text wrapping
       const displayText = text || placeholder || '';
       const isPlaceholder = !text && !!placeholder;
       
@@ -59,7 +69,7 @@ export function CanvasText({
       const lines: string[] = [];
       const paragraphs = (displayText || '').split('\n');
       
-      const maxWidth = rect.width;
+      const maxWidth = containerWidth;
       
       // Wrap text
       paragraphs.forEach((paragraph, index) => {
@@ -86,15 +96,24 @@ export function CanvasText({
       // Add extra padding at bottom if cursor is shown to ensure it doesn't clip
       const height = lines.length * fontSize * lineHeight + (showCursor ? fontSize * 0.5 : 0);
       
-      // Set canvas height and scale
-      canvas.height = height * dpr;
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${height}px`;
+      const targetWidth = Math.floor(containerWidth);
+      const targetHeight = Math.floor(height);
+      const targetCanvasWidth = targetWidth * dpr;
+      const targetCanvasHeight = targetHeight * dpr;
+
+      // CRITICAL GUARD: Only update canvas DOM size properties if they actually changed.
+      // This completely eliminates layout thrashing ("elements shifting or moving") during continuous ticks.
+      if (canvas.width !== targetCanvasWidth || canvas.height !== targetCanvasHeight) {
+        canvas.width = targetCanvasWidth;
+        canvas.height = targetCanvasHeight;
+        canvas.style.width = `${targetWidth}px`;
+        canvas.style.height = `${targetHeight}px`;
+      }
       
+      ctx.clearRect(0, 0, targetWidth, targetHeight);
+      ctx.save();
       ctx.scale(dpr, dpr);
       
-      // Clear and Setup Context
-      ctx.clearRect(0, 0, rect.width, height);
       ctx.font = isPlaceholder ? `italic ${font}` : font;
       ctx.fillStyle = isPlaceholder ? '#57534e' : color; 
       ctx.textBaseline = 'top';
@@ -104,28 +123,28 @@ export function CanvasText({
         ctx.fillText(line, 0, index * fontSize * lineHeight);
       });
 
-      // Draw cursor
-      if (showCursor && !isPlaceholder && cursorVisible) {
-        const lastLine = lines[lines.length - 1] || '';
-        const metrics = ctx.measureText(lastLine);
-        const cursorX = metrics.width + 2;
-        const cursorY = (lines.length - 1) * fontSize * lineHeight;
-        
+      // Draw cursor without triggering styles updates if visible
+      if (showCursor && cursorVisible) {
         ctx.fillStyle = '#f59e0b'; // amber-500
-        ctx.fillRect(cursorX, cursorY + fontSize * 0.1, 1.5, fontSize * 1.1);
-      } else if (showCursor && isPlaceholder && cursorVisible) {
-        // Draw cursor at beginning if there is no text yet
-        ctx.fillStyle = '#f59e0b'; // amber-500
-        ctx.fillRect(0, fontSize * 0.1, 1.5, fontSize * 1.1);
+        if (!isPlaceholder) {
+          const lastLine = lines[lines.length - 1] || '';
+          const metrics = ctx.measureText(lastLine);
+          const cursorX = metrics.width + 2;
+          const cursorY = (lines.length - 1) * fontSize * lineHeight;
+          ctx.fillRect(cursorX, cursorY + fontSize * 0.1, 1.5, fontSize * 1.1);
+        } else {
+          ctx.fillRect(0, fontSize * 0.1, 1.5, fontSize * 1.1);
+        }
       }
 
+      ctx.restore();
       animationFrameId = requestAnimationFrame(renderCanvas);
     };
 
     animationFrameId = requestAnimationFrame(renderCanvas);
     
     return () => cancelAnimationFrame(animationFrameId);
-  }, [text, placeholder, font, color, lineHeight, showCursor]);
+  }, [text, placeholder, font, color, lineHeight, showCursor, containerWidth]);
 
   return (
     <div ref={containerRef} className={`w-full overflow-hidden ${className}`}>

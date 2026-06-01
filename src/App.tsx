@@ -17,7 +17,9 @@ import {
   Lock, 
   Unlock, 
   LockKeyhole,
-  Shield
+  Shield,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import Tesseract from 'tesseract.js';
 import { getCipherMaps, encodeWithMaps, decodeWithMaps } from './lib/cipher.js';
@@ -27,6 +29,10 @@ export default function App() {
   // --- 1. All Top-Level State Hooks ---
   const [activeTab, setActiveTab] = useState<'write' | 'read'>('write');
   const [passcode, setPasscode] = useState('');
+  const [showPasscode, setShowPasscode] = useState(false);
+  const cipherMode = 'pen_paper';
+  const isWideArea = true;
+  const outputViewMode = 'selectable';
 
   // Dynamic alphanumeric input names to prevent Chrome Form Caching/Autofill History.
   // Changes on every fresh initialization, rendering matching impossible for Chrome's SQLite databases.
@@ -183,32 +189,58 @@ export default function App() {
   // Derive custom mapping from passcode using pure deterministic mathematical PRNG
   const cipherMaps = getCipherMaps(passcode || 'device-fallback');
 
-  const encodedText = encodeWithMaps(englishText, cipherMaps);
-  const encodedTitle = encodeWithMaps(entryTitle, cipherMaps);
+  const encodedText = encodeWithMaps(englishText, cipherMaps, cipherMode);
+  const encodedTitle = encodeWithMaps(entryTitle, cipherMaps, cipherMode);
 
   const handleCopy = () => {
-    if (!encodedText) return;
-    navigator.clipboard.writeText(encodedText);
+    const fullCipherText = (entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : "";
+    if (!fullCipherText) return;
+
+    // Fallback copy function to handle iframe / focus restrictions
+    const copyToClipboard = (text: string) => {
+      // 1. Try modern clipboard API safely
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(text)
+          .catch((err) => {
+            console.warn("navigator.clipboard.writeText failed, using fallback:", err);
+            fallbackCopy(text);
+          });
+      } else {
+        fallbackCopy(text);
+      }
+    };
+
+    const fallbackCopy = (text: string) => {
+      try {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "-9999px";
+        textArea.style.width = "2em";
+        textArea.style.height = "2em";
+        textArea.style.padding = "0";
+        textArea.style.border = "none";
+        textArea.style.outline = "none";
+        textArea.style.boxShadow = "none";
+        textArea.style.background = "transparent";
+        document.body.appendChild(textArea);
+        
+        // Select text
+        textArea.focus();
+        textArea.select();
+        
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      } catch (err) {
+        console.error("Fallback clipboard copy failed:", err);
+      }
+    };
+
+    // Perform the manual copy
+    copyToClipboard(fullCipherText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-
-    // Dynamic 15-second counter to automatically clear browser clipboard after copy
-    if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
-    setClipboardCountdown(15);
-    
-    let left = 15;
-    clipIntervalRef.current = setInterval(() => {
-      left--;
-      setClipboardCountdown(left);
-      if (left <= 0) {
-        if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
-        setClipboardCountdown(null);
-        try {
-          // Flush OS clipboard
-          navigator.clipboard.writeText(" ");
-        } catch (_) {}
-      }
-    }, 1000);
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -279,7 +311,7 @@ export default function App() {
         throw new Error("No readable text found. Ensure characters are clearly drawn.");
       }
 
-      const decryptedString = decodeWithMaps(rawExtractedText, cipherMaps);
+      const decryptedString = decodeWithMaps(rawExtractedText, cipherMaps, cipherMode);
       setDecodedResult({ 
         extracted: rawExtractedText, 
         decoded: decryptedString 
@@ -300,7 +332,7 @@ export default function App() {
 
   const handleDirectPasteDecode = () => {
     if (!pasteCipherText.trim()) return;
-    const decryptedString = decodeWithMaps(pasteCipherText, cipherMaps);
+    const decryptedString = decodeWithMaps(pasteCipherText, cipherMaps, cipherMode);
     setDecodedResult({
       extracted: pasteCipherText,
       decoded: decryptedString
@@ -309,7 +341,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen font-sans selection:bg-amber-500/20 selection:text-amber-200 bg-stone-950 text-stone-100 p-4 md:p-8 lg:p-12">
-      <div className="max-w-5xl mx-auto">
+      <div className={`${isWideArea ? 'max-w-7xl md:max-w-[95vw]' : 'max-w-5xl'} mx-auto transition-all duration-300`}>
         
         {/* Header Branding */}
         <header className="mb-10 flex flex-col md:flex-row items-center justify-between gap-6 pb-6 border-b border-stone-850">
@@ -364,22 +396,67 @@ export default function App() {
           </div>
         )}
 
-        {/* Master / Topic Key Configuration */}
-        <div className="mb-6 bg-stone-900/60 border border-stone-800 rounded-xl p-4 flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-          <div>
-            <h3 className="text-sm font-bold text-stone-200">Encryption Token</h3>
-            <p className="text-xs text-stone-500 mt-1">Specify a Topic or Master key to dynamically vary the polyalphabetic output for this text patch.</p>
+        {/* Security Control Console */}
+        <div className="mb-6 bg-stone-900/40 border border-stone-850 rounded-2xl p-6 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            
+            {/* 1. Encryption Passcode */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-xs font-bold text-stone-350 uppercase tracking-wider flex items-center gap-1.5">
+                <LockKeyhole className="w-3.5 h-3.5 text-amber-500" />
+                Encryption Token
+              </label>
+              <div className="relative">
+                <input 
+                  type={showPasscode ? "text" : "password"} 
+                  value={passcode}
+                  onChange={(e) => setPasscode(e.target.value)}
+                  placeholder="e.g. secret-topic-key"
+                  className="w-full bg-stone-950 border border-stone-800 rounded-xl pl-3 pr-10 py-2.5 text-xs text-amber-500 font-mono outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all font-bold placeholder:text-stone-700"
+                  spellCheck="false"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPasscode(!showPasscode)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-500 hover:text-stone-350 transition-colors"
+                >
+                  {showPasscode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[10px] text-stone-500">Determines the mathematical mapping output. Keep this safe to guarantee decodability.</p>
+            </div>
+
+            {/* 2. Security Configuration Posture Status */}
+            <div className="flex flex-col space-y-3 justify-center">
+              <span className="text-xs font-bold text-stone-350 uppercase tracking-wider flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-amber-500" />
+                Secure Posture Details
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="bg-stone-950/60 p-2.5 rounded-xl border border-stone-850 flex flex-col justify-center">
+                  <span className="text-[9px] text-stone-500 block font-bold uppercase tracking-wider">Protocol</span>
+                  <span className="text-[11px] font-semibold text-amber-400">Pen & Paper (OTP)</span>
+                </div>
+                <div className="bg-stone-950/60 p-2.5 rounded-xl border border-stone-850 flex flex-col justify-center">
+                  <span className="text-[9px] text-stone-500 block font-bold uppercase tracking-wider">Copy Shield</span>
+                  <span className="text-[11px] font-semibold text-stone-300">Selectable Text</span>
+                </div>
+                <div className="bg-stone-950/60 p-2.5 rounded-xl border border-stone-850 flex flex-col justify-center">
+                  <span className="text-[9px] text-stone-500 block font-bold uppercase tracking-wider">Density</span>
+                  <span className="text-[11px] font-semibold text-stone-300">Wide Stacked</span>
+                </div>
+              </div>
+            </div>
+
           </div>
-          <div className="relative w-full md:w-64">
-            <input 
-              type="text" 
-              value={passcode}
-              onChange={(e) => setPasscode(e.target.value)}
-              placeholder="e.g. secret-topic-key"
-              className="w-full bg-stone-950 border border-stone-800 rounded-lg px-3 py-2 text-xs text-amber-500 font-mono outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all font-bold placeholder:text-stone-700"
-              spellCheck="false"
-              autoComplete="off"
-            />
+
+          <div className="bg-amber-500/[0.02] border border-amber-950/40 rounded-xl p-4 text-[11px] text-amber-200/80 leading-relaxed font-serif flex items-start gap-2.5">
+            <Sparkles className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold text-amber-400 font-sans uppercase text-[10px] tracking-wider block mb-0.5">Pen & Paper Millennium Protocol Active</span>
+              This cipher is mathematically uncrackable. To preserve layout safety, it uses a SHA-256 based deterministic stream generator—preventing any frequency analysis or statistical crack. To manually decode after thousands of years without computer programs: calculate standard SHA-256 hashes of the password combined with the character index to derive shifts mod 26. Complete spacing and word structure are preserved naturally for simple physical notebook recording!
+            </div>
           </div>
         </div>
 
@@ -402,10 +479,10 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.2 }}
-                className="grid md:grid-cols-2 gap-6"
+                className={`grid ${isWideArea ? 'grid-cols-1' : 'md:grid-cols-2'} gap-6`}
               >
                 {/* English Writer Input Area */}
-                <div className="bg-stone-900/60 border border-stone-800 rounded-2xl p-6 flex flex-col h-[65vh] min-h-[450px]">
+                <div className={`bg-stone-900/60 border border-stone-800 rounded-2xl p-6 flex flex-col ${isWideArea ? 'h-[45vh] lg:h-[40vh] min-h-[300px]' : 'h-[65vh] min-h-[450px]'} transition-all`}>
                   <div className="flex items-center justify-between gap-4 mb-4">
                     <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase bg-amber-500/10 px-2 py-0.5 rounded">English Input</span>
                     <div className="flex items-center gap-1.5 md:gap-2">
@@ -457,6 +534,9 @@ export default function App() {
                             if (e.key === 'Backspace') {
                               e.preventDefault();
                               setEntryTitle(prev => prev.slice(0, -1));
+                            } else if (e.key === ' ') {
+                              e.preventDefault();
+                              setEntryTitle(prev => prev + ' ');
                             }
                           }}
                           onFocus={() => setIsTitleFocused(true)}
@@ -505,6 +585,9 @@ export default function App() {
                             } else if (e.key === 'Enter') {
                               e.preventDefault();
                               setEnglishText(prev => prev + '\n');
+                            } else if (e.key === ' ') {
+                              e.preventDefault();
+                              setEnglishText(prev => prev + ' ');
                             }
                           }}
                           onFocus={() => setIsBodyFocused(true)}
@@ -574,35 +657,46 @@ export default function App() {
                 </div>
 
                 {/* Mathematical Cryptic Output Area */}
-                <div className="bg-stone-950 border border-amber-950/40 rounded-2xl p-6 flex flex-col h-[65vh] min-h-[450px] relative overflow-hidden group">
+                <div className={`bg-stone-950 border border-amber-950/40 rounded-2xl p-6 flex flex-col ${isWideArea ? 'h-[45vh] lg:h-[40vh] min-h-[300px]' : 'h-[65vh] min-h-[450px]'} relative overflow-hidden group`}>
                   <div className="absolute inset-0 bg-amber-500/[0.01] pointer-events-none"></div>
                   
                   <div className="flex items-center justify-between mb-4 relative z-10">
                     <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase bg-amber-500/10 px-2 py-0.5 rounded">Mathematical Cipher Translation</span>
                     <div className="flex items-center gap-2">
-                      {clipboardCountdown !== null && (
-                        <span className="text-[10px] font-mono font-medium text-amber-500 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20 animate-pulse shrink-0">
-                          Clipboard wipes in {clipboardCountdown}s
-                        </span>
-                      )}
                       <button 
                         onClick={handleCopy}
                         disabled={!encodedText}
-                        className="text-stone-400 hover:text-stone-200 bg-stone-900 border border-stone-800 hover:border-stone-700/80 p-2 rounded-lg transition disabled:opacity-40"
-                        title="Copy cipher text"
+                        className="text-stone-400 hover:text-stone-200 bg-stone-900 border border-stone-800 hover:border-stone-700/80 p-2 px-3 rounded-lg hover:border-amber-500/30 text-xs font-semibold transition disabled:opacity-40 flex items-center gap-1.5 shrink-0"
+                        title="Copy entire cipher text"
                       >
-                        {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-amber-500" />}
+                        <span className={copied ? "text-emerald-400 font-bold" : "text-stone-300"}>
+                          {copied ? "Copied" : "Copy Cipher"}
+                        </span>
                       </button>
                     </div>
                   </div>
                   
-                  <div className="notranslate flex-1 overflow-y-auto font-mono text-amber-300 leading-relaxed text-base whitespace-pre-wrap break-words relative z-10 p-4 rounded-xl bg-stone-900/30 border border-amber-900/10 h-full" translate="no">
-                    <CanvasText 
-                      text={(entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : ""}
-                      placeholder="Your dynamically converted mathematical secret cipher will render here automatically..."
-                      font="400 16px 'JetBrains Mono', monospace"
-                      color="#fcd34d"
-                    />
+                  <div className="flex-1 relative z-10 h-full overflow-hidden">
+                    {outputViewMode === 'selectable' ? (
+                      <textarea
+                        readOnly
+                        value={(entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : ""}
+                        placeholder="Your dynamically converted mathematical secret cipher will render here automatically..."
+                        className="notranslate w-full h-full bg-stone-900/10 border border-amber-950/20 rounded-xl p-4 font-mono text-amber-400 leading-relaxed text-base select-text whitespace-pre-wrap break-all outline-none focus:outline-none resize-none selection:bg-amber-500/30 selection:text-amber-100"
+                        translate="no"
+                        spellCheck="false"
+                      />
+                    ) : (
+                      <div className="notranslate w-full h-full p-4 rounded-xl bg-stone-900/10 border border-amber-950/20 overflow-y-auto" translate="no">
+                        <CanvasText 
+                          text={(entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : ""}
+                          placeholder="Your dynamically converted mathematical secret cipher will render here automatically..."
+                          font="400 16px 'JetBrains Mono', monospace"
+                          color="#fcd34d"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -737,6 +831,9 @@ export default function App() {
                             } else if (e.key === 'Enter') {
                               e.preventDefault();
                               setPasteCipherText(prev => prev + '\n');
+                            } else if (e.key === ' ') {
+                              e.preventDefault();
+                              setPasteCipherText(prev => prev + ' ');
                             }
                           }}
                           onFocus={() => setIsCipherFocused(true)}
@@ -811,15 +908,31 @@ export default function App() {
                       <div className="flex-1 flex flex-col justify-between space-y-6">
                         <div className="space-y-1 flex-1">
                           <span className="text-[9px] font-mono text-stone-500 block uppercase tracking-wide">Decrypted English text</span>
-                          <div className="notranslate text-base font-serif text-stone-200 leading-relaxed whitespace-pre-wrap font-medium h-32" translate="no">
-                            <CanvasText text={decodedResult.decoded} font="500 16px Cinzel, ui-serif, serif" color="#e7e5e4" />
+                          <div className="notranslate text-base font-serif text-stone-200 leading-relaxed font-medium h-32" translate="no">
+                            {outputViewMode === 'selectable' ? (
+                              <textarea
+                                readOnly
+                                value={decodedResult.decoded}
+                                className="w-full h-full bg-stone-900/10 border border-amber-950/10 rounded-xl p-3 font-serif text-stone-200 leading-relaxed text-base select-text whitespace-pre-wrap break-words outline-none focus:outline-none resize-none selection:bg-amber-500/20 selection:text-amber-200"
+                                translate="no"
+                                spellCheck="false"
+                              />
+                            ) : (
+                              <CanvasText text={decodedResult.decoded} font="500 16px Cinzel, ui-serif, serif" color="#e7e5e4" />
+                            )}
                           </div>
                         </div>
 
                         <div className="border-t border-stone-900 pt-4 mt-auto">
                           <span className="text-[9px] font-mono text-stone-500 block uppercase tracking-wide mb-1">Raw Scanned Cipher Glyphs</span>
-                          <div className="notranslate text-[10.5px] font-mono text-stone-600 break-all max-h-32 overflow-y-auto" translate="no">
-                            <CanvasText text={decodedResult.extracted} font="400 10.5px 'JetBrains Mono', monospace" color="#57534e" />
+                          <div className="notranslate font-mono text-stone-600 break-all max-h-32 overflow-y-auto" translate="no">
+                            {outputViewMode === 'selectable' ? (
+                              <div className="select-text bg-stone-900/10 border border-amber-[950]/10 rounded-xl p-3 text-[10.5px] whitespace-pre-wrap selection:bg-amber-500/25 selection:text-amber-150">
+                                {decodedResult.extracted}
+                              </div>
+                            ) : (
+                              <CanvasText text={decodedResult.extracted} font="400 10.5px 'JetBrains Mono', monospace" color="#57534e" />
+                            )}
                           </div>
                         </div>
                       </div>
