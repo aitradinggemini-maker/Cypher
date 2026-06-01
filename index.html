@@ -12,6 +12,18 @@
     <meta name="format-detection" content="telephone=no, date=no, email=no, address=no" />
     
     <title>Cryptic Diary</title>
+    <!-- Trusted Types Policy DOM-XSS Shield -->
+    <script>
+      if (window.trustedTypes && window.trustedTypes.createPolicy) {
+        try {
+          window.trustedTypes.createPolicy('default', {
+            createHTML: (string) => string,
+            createScript: (string) => string,
+            createScriptURL: (string) => string
+          });
+        } catch (_) {}
+      }
+    </script>
   </head>
   <body class="notranslate" translate="no">
     <div id="root"></div>

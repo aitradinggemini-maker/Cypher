@@ -6,9 +6,19 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    assetsInclude: ['**/*.wasm'],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+      },
+    },
+    build: {
+      rollupOptions: {
+        external: [
+          '../dist/argon2.wasm',
+          './dist/argon2.wasm',
+          'argon2.wasm',
+        ],
       },
     },
     server: {
