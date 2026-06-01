@@ -57,6 +57,38 @@ export default function App() {
   const [isWipedAutomatically, setIsWipedAutomatically] = useState(false);
   const [clipboardCountdown, setClipboardCountdown] = useState<number | null>(null);
 
+  // PWA Installation hooks for Android/iOS native standalone wrappers
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', () => {
+      setIsInstallable(false);
+      setDeferredPrompt(null);
+    });
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstallable(false);
+      setDeferredPrompt(null);
+    }
+  };
+
   // Refs for tracking background task identifiers
   const fileInputRef = useRef<HTMLInputElement>(null);
   const idleRef = useRef<any>(null);
@@ -89,22 +121,9 @@ export default function App() {
       }
 
       // 3. Delete Cache Storage buckets
-      if (window.caches && window.caches.keys) {
-        window.caches.keys().then((keys) => {
-          keys.forEach((key) => window.caches.delete(key));
-        });
-      }
+      // Caches and Service workers are conserved to maintain offline PWA launch reliability
 
-      // 4. Deregister any service workers
-      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-        navigator.serviceWorker.getRegistrations().then((registrations) => {
-          for (const registration of registrations) {
-            registration.unregister();
-          }
-        });
-      }
-
-      // 5. Delete IndexedDB databases
+      // 4. Delete IndexedDB databases
       if (window.indexedDB && window.indexedDB.databases) {
         window.indexedDB.databases().then((dbs) => {
           dbs.forEach((db) => {
@@ -395,6 +414,28 @@ export default function App() {
             </button>
           </div>
         )}
+
+        {/* On-device Mobile / Android App Installer and Guide */}
+        <div className="mb-6 bg-amber-500/[0.02] border border-amber-500/10 rounded-2xl p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-xs font-bold text-amber-500 uppercase tracking-widest flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              On-Device Android Application
+            </h3>
+            <p className="text-xs text-stone-400 max-w-2xl leading-relaxed">
+              This application is configured as a fully offline Progressive Web App (PWA). You can install it on your mobile phone as a native app shell! Under Android Chrome, tap <span className="text-amber-400 font-bold">"..." &rarr; "Add to Home Screen"</span> or <span className="text-amber-400 font-bold">"Install App"</span>. This places an icon on your launcher to run standalone, fully operational in <span className="text-emerald-400 font-bold">Airplane Mode</span> with zero Wi-Fi or data packets transmitted.
+            </p>
+          </div>
+          {isInstallable && (
+            <button
+              onClick={handleInstallApp}
+              className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-stone-950 font-bold text-xs uppercase tracking-wider shadow-md active:scale-95 transition-all shrink-0 flex items-center gap-2"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Install Android App
+            </button>
+          )}
+        </div>
 
         {/* Security Control Console */}
         <div className="mb-6 bg-stone-900/40 border border-stone-850 rounded-2xl p-6 space-y-6">
