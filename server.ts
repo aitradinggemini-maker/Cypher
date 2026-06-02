@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI } from "@google/genai";
 
 function getSecureKey(): string {
   // Priority 1: Environment variable set in Termux or deployment shell (e.g. export DIARY_MASTER_KEY=...)
@@ -65,7 +66,64 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+  // High-accuracy server-side OCR via Gemini 3.5 Flash Model (Sandboxed iframe safe)
+  app.post("/api/ocr", async (req, res) => {
+    try {
+      const { image, mimeType } = req.body;
+      if (!image) {
+        return res.status(400).json({ error: "No image file data provided" });
+      }
+
+      let cleanBase64 = image;
+      let cleanMimeType = mimeType || "image/png";
+      if (image.includes(";base64,")) {
+        const parts = image.split(";base64,");
+        cleanBase64 = parts[1];
+        const mimePart = parts[0].match(/data:(.*)/);
+        if (mimePart) {
+          cleanMimeType = mimePart[1];
+        }
+      }
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ 
+          error: "Gemini API Key is not configured in Settings > Secrets. Image scan features require an active API key." 
+        });
+      }
+
+      const ai = new GoogleGenAI({
+        apiKey: apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [
+          {
+            inlineData: {
+              data: cleanBase64,
+              mimeType: cleanMimeType
+            }
+          },
+          "Extract all handwriting, text, characters, letters, and numbers from this image. Only write the extracted content verbatim, exactly as written or printed, with matching line breaks. Do not explain, do not add introductory phrases, and do not add formatting/markdown. If the image is empty or has no readable text, reply with nothing."
+        ]
+      });
+
+      const text = response.text || "";
+      res.json({ text });
+    } catch (err: any) {
+      console.error("Gemini OCR server error:", err);
+      res.status(500).json({ error: err.message || "Failed to analyze image with Gemini AI" });
+    }
+  });
 
   // Strict Zero-Cache, Zero-Footprint headers for any incoming request.
   // This directs Chrome and any intermediary proxies never to store or download elements of the app to disk.

@@ -14,14 +14,13 @@ import {
   Copy, 
   Check, 
   ShieldAlert, 
+  Shield,
   Lock, 
   Unlock, 
   LockKeyhole,
-  Shield,
   Eye,
   EyeOff
 } from 'lucide-react';
-import Tesseract from 'tesseract.js';
 import { getCipherMaps, encodeWithMaps, decodeWithMaps } from './lib/cipher.js';
 import { CanvasText } from './components/CanvasText';
 
@@ -112,16 +111,6 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const idleRef = useRef<any>(null);
   const clipIntervalRef = useRef<any>(null);
-
-  // Extension-Bypassing Keystroke Shield States & Refs
-  const [isKeystrokeShieldActive, setIsKeystrokeShieldActive] = useState(true);
-  const [isTitleFocused, setIsTitleFocused] = useState(false);
-  const [isBodyFocused, setIsBodyFocused] = useState(false);
-  const [isCipherFocused, setIsCipherFocused] = useState(false);
-
-  const titleHiddenRef = useRef<HTMLInputElement>(null);
-  const bodyHiddenRef = useRef<HTMLTextAreaElement>(null);
-  const cipherHiddenRef = useRef<HTMLTextAreaElement>(null);
 
   // --- 2. Zero-Footprint & Sandbox Purge Functions ---
   const destructAllBrowserFootprints = () => {
@@ -245,11 +234,15 @@ export default function App() {
   // Derive custom mapping from passcode using pure deterministic mathematical PRNG
   const cipherMaps = getCipherMaps(passcode || 'device-fallback');
 
-  const encodedText = encodeWithMaps(englishText, cipherMaps, cipherMode);
-  const encodedTitle = encodeWithMaps(entryTitle, cipherMaps, cipherMode);
+  // Combine title and body to preserve exact character index alignment during mathematical stream cipher calculation
+  const getCombinedPlainText = () => {
+    return (entryTitle ? entryTitle + "\n\n" : "") + englishText;
+  };
+
+  const encodedText = encodeWithMaps(getCombinedPlainText(), cipherMaps, cipherMode);
 
   const handleCopy = () => {
-    const fullCipherText = (entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : "";
+    const fullCipherText = encodedText;
     if (!fullCipherText) return;
 
     // Fallback copy function to handle iframe / focus restrictions
@@ -336,50 +329,74 @@ export default function App() {
     }
   };
 
-  // 100% Client-Side Local OCR execution with strictly enforced zero-cache configuration
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error("Failed to convert file to base64 format"));
+        }
+      };
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  // OCR execution via robust, secure server-side Gemini AI for guaranteed compatibility inside iframes
   const handleLocalOCR = async () => {
     if (!selectedImage) return;
     setIsDecoding(true);
     setErrorMsg(null);
     setDecodedResult(null);
-    setOcrProgress(0);
-    setOcrStatus('Initializing local neural core...');
+    setOcrProgress(5);
+    setOcrStatus('Preparing image file format...');
 
-    let worker: Tesseract.Worker | null = null;
     try {
-      // Force Tesseract.js to bypass any IndexedDB data or local HTTP disk caching entirely
-      worker = await Tesseract.createWorker('eng', 1, {
-        cacheMethod: 'none',
-        logger: (m) => {
-          if (m.status === 'loading tesseract core' || m.status === 'initializing api') {
-            setOcrStatus('Warming up client-side OCR engine...');
-            setOcrProgress(Math.round(m.progress * 100));
-          } else if (m.status === 'recognizing text') {
-            setOcrStatus('Reading handwritten/printed characters...');
-            setOcrProgress(Math.round(m.progress * 102) > 100 ? 100 : Math.round(m.progress * 100));
-          }
-        }
+      setOcrProgress(25);
+      const base64Data = await fileToBase64(selectedImage);
+      setOcrProgress(45);
+      setOcrStatus('Scanning with secure server-side AI visual core...');
+
+      const response = await fetch('/api/ocr', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: base64Data,
+          mimeType: selectedImage.type
+        })
       });
 
-      const result = await worker.recognize(selectedImage);
-      const rawExtractedText = result.data.text || "";
+      setOcrProgress(75);
+      if (!response.ok) {
+        let errText = "Failed to scan. Ensure image is legible.";
+        try {
+          const errData = await response.json();
+          errText = errData.error || errText;
+        } catch (_) {}
+        throw new Error(errText);
+      }
+
+      const data = await response.json();
+      const rawExtractedText = data.text || "";
       if (!rawExtractedText.trim()) {
         throw new Error("No readable text found. Ensure characters are clearly drawn.");
       }
 
+      setOcrProgress(90);
       const decryptedString = decodeWithMaps(rawExtractedText, cipherMaps, cipherMode);
       setDecodedResult({ 
         extracted: rawExtractedText, 
         decoded: decryptedString 
       });
+      setOcrProgress(100);
     } catch (err: any) {
+      console.error("Gemini OCR Error:", err);
       setErrorMsg(err.message || "Failed to scan. Ensure image is legible.");
     } finally {
-      if (worker) {
-        try {
-          await (worker as Tesseract.Worker).terminate();
-        } catch (_) {}
-      }
       setIsDecoding(false);
       setOcrProgress(0);
       setOcrStatus('');
@@ -393,6 +410,25 @@ export default function App() {
       extracted: pasteCipherText,
       decoded: decryptedString
     });
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          setPasteCipherText(text);
+          setErrorMsg(null);
+        } else {
+          setErrorMsg("Clipboard is empty or does not contain plain text.");
+        }
+      } else {
+        setErrorMsg("Clipboard access blocked by browser. Please manually right-click/long-press inside the paste box to paste.");
+      }
+    } catch (err: any) {
+      console.warn("Clipboard access error:", err);
+      setErrorMsg("Please manually right-click/long-press inside the paste box and select paste.");
+    }
   };
 
   return (
@@ -602,182 +638,79 @@ export default function App() {
                 className={`grid ${isWideArea ? 'grid-cols-1' : 'md:grid-cols-2'} gap-6`}
               >
                 {/* English Writer Input Area */}
-                <div className={`bg-stone-900/60 border border-stone-800 rounded-2xl p-6 flex flex-col ${isWideArea ? 'h-[45vh] lg:h-[40vh] min-h-[300px]' : 'h-[65vh] min-h-[450px]'} transition-all`}>
+                <div className={`bg-stone-900/60 border border-stone-800 rounded-2xl p-6 flex flex-col ${isWideArea ? 'h-[55vh] lg:h-[50vh] min-h-[380px]' : 'h-[70vh] min-h-[500px]'} transition-all`}>
                   <div className="flex items-center justify-between gap-4 mb-4">
                     <span className="text-[10px] font-bold text-amber-500 tracking-wider uppercase bg-amber-500/10 px-2 py-0.5 rounded">English Input</span>
-                    <div className="flex items-center gap-1.5 md:gap-2">
-                      <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-amber-500/[0.04] border border-amber-550/15">
-                        <Shield className={`w-3 h-3 ${isKeystrokeShieldActive ? 'text-amber-500 animate-pulse' : 'text-stone-500'}`} />
-                        <span className="text-[8px] font-bold text-stone-400 uppercase tracking-widest">Keystroke Shield</span>
-                        <button 
-                          onClick={() => {
-                            setIsKeystrokeShieldActive(!isKeystrokeShieldActive);
-                            handleShredMemory();
-                          }}
-                          className={`relative inline-flex h-3.5 w-6.5 shrink-0 cursor-pointer rounded-full border border-stone-850 transition-colors duration-150 ease-in-out focus:outline-none ${isKeystrokeShieldActive ? 'bg-amber-500/90' : 'bg-stone-950'}`}
-                          title="Toggles dynamic RAM scrubbing of keystrokes to prevent browser extensions from inspecting inputs"
-                          type="button"
-                        >
-                          <span className={`pointer-events-none inline-block h-2.5 w-2.5 transform rounded-full bg-stone-950 shadow transition duration-150 ease-in-out ${isKeystrokeShieldActive ? 'translate-x-[11px]' : 'translate-x-[1px]'}`} />
-                        </button>
-                      </div>
-                    </div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+                            const text = await navigator.clipboard.readText();
+                            if (text) {
+                              setEnglishText(text);
+                            }
+                          }
+                        } catch (err) {
+                          console.warn("Clipboard access denied:", err);
+                        }
+                      }}
+                      type="button"
+                      className="text-stone-400 hover:text-stone-200 bg-stone-950 border border-stone-800 hover:border-stone-750 px-2.5 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 shrink-0 cursor-pointer"
+                      title="Paste text from clipboard"
+                    >
+                      <Upload className="w-3 h-3 text-amber-500" />
+                      <span>Paste</span>
+                    </button>
                   </div>
                   
-                  {isKeystrokeShieldActive ? (
-                    <>
-                      {/* Visual Input representing title */}
-                      <div 
-                        onClick={() => titleHiddenRef.current?.focus()}
-                        className={`w-full bg-transparent pb-3 mb-4 border-b text-lg font-serif outline-none leading-relaxed min-h-[38px] cursor-text flex items-center relative transition-colors duration-150 ${isTitleFocused ? 'border-amber-500/30' : 'border-stone-800'}`}
-                      >
-                        <CanvasText 
-                          text={entryTitle} 
-                          placeholder="Diary Entry Title..." 
-                          font="600 18px Cinzel, ui-serif, serif" 
-                          showCursor={isTitleFocused}
-                        />
-                        
-                        {/* 100% Uncontrolled hidden input for dynamic character reading */}
-                        <input
-                          ref={titleHiddenRef}
-                          type="text"
-                          defaultValue=""
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val) {
-                              setEntryTitle(prev => prev + val);
-                            }
-                            e.target.value = ''; // Instantly wipe DOM footprint
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Backspace') {
-                              e.preventDefault();
-                              setEntryTitle(prev => prev.slice(0, -1));
-                            } else if (e.key === ' ') {
-                              e.preventDefault();
-                              setEntryTitle(prev => prev + ' ');
-                            }
-                          }}
-                          onFocus={() => setIsTitleFocused(true)}
-                          onBlur={() => setIsTitleFocused(false)}
-                          className="absolute w-px h-px opacity-0 pointer-events-none left-0 top-0 select-none"
-                          autoComplete="off"
-                          autoCorrect="off"
-                          autoCapitalize="none"
-                          spellCheck="false"
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          data-bwignore="true"
-                          data-bitwarden-ignore="true"
-                          data-dashlane-ignore="true"
-                          data-gramm="false"
-                        />
-                      </div>
+                  <input
+                    type="text"
+                    name={fieldToken + "_title"}
+                    id={fieldToken + "_title"}
+                    value={entryTitle}
+                    onChange={(e) => setEntryTitle(e.target.value)}
+                    placeholder="Diary Entry Title..."
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="none"
+                    spellCheck="false"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-bwignore="true"
+                    data-bitwarden-ignore="true"
+                    data-dashlane-ignore="true"
+                    data-gramm="false"
+                    data-enable-grammarly="false"
+                    data-translate="no"
+                    translate="no"
+                    className="notranslate w-full bg-transparent pb-3 mb-4 border-b border-stone-800 text-lg font-serif text-stone-200 outline-none placeholder:text-stone-700 font-semibold focus:border-amber-500/30 transition-colors"
+                  />
 
-                      {/* Visual Input representing body text */}
-                      <div 
-                        onClick={() => bodyHiddenRef.current?.focus()}
-                        className={`flex-1 w-full bg-transparent text-stone-200 font-serif leading-relaxed text-base overflow-y-auto cursor-text relative pb-10 min-h-[150px]`}
-                      >
-                        <CanvasText 
-                          text={englishText} 
-                          placeholder="Write down your secret thoughts or confidential diary logs here in plain English using secure RAM Keystroke Shield..." 
-                          font="400 16px Cinzel, ui-serif, serif" 
-                          showCursor={isBodyFocused}
-                        />
-                        
-                        {/* 100% Uncontrolled hidden textarea for dynamic character reading */}
-                        <textarea
-                          ref={bodyHiddenRef}
-                          defaultValue=""
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val) {
-                              setEnglishText(prev => prev + val);
-                            }
-                            e.target.value = ''; // Instantly wipe DOM footprint
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Backspace') {
-                              e.preventDefault();
-                              setEnglishText(prev => prev.slice(0, -1));
-                            } else if (e.key === 'Enter') {
-                              e.preventDefault();
-                              setEnglishText(prev => prev + '\n');
-                            } else if (e.key === ' ') {
-                              e.preventDefault();
-                              setEnglishText(prev => prev + ' ');
-                            }
-                          }}
-                          onFocus={() => setIsBodyFocused(true)}
-                          onBlur={() => setIsBodyFocused(false)}
-                          className="absolute w-px h-px opacity-0 pointer-events-none left-0 top-0 select-none resize-none"
-                          autoComplete="off"
-                          autoCorrect="off"
-                          autoCapitalize="none"
-                          spellCheck="false"
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          data-bwignore="true"
-                          data-bitwarden-ignore="true"
-                          data-dashlane-ignore="true"
-                          data-gramm="false"
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <input
-                        type="text"
-                        name={fieldToken + "_title"}
-                        id={fieldToken + "_title"}
-                        value={entryTitle}
-                        onChange={(e) => setEntryTitle(e.target.value)}
-                        placeholder="Diary Entry Title..."
-                        autoComplete="new-password"
-                        autoCorrect="off"
-                        autoCapitalize="none"
-                        spellCheck="false"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                        data-bwignore="true"
-                        data-bitwarden-ignore="true"
-                        data-dashlane-ignore="true"
-                        data-gramm="false"
-                        data-enable-grammarly="false"
-                        data-translate="no"
-                        translate="no"
-                        className="notranslate w-full bg-transparent pb-3 mb-4 border-b border-stone-800 text-lg font-serif text-stone-200 outline-none placeholder:text-stone-600 font-semibold"
-                      />
-
-                      <textarea
-                        name={fieldToken + "_text"}
-                        id={fieldToken + "_text"}
-                        value={englishText}
-                        onChange={(e) => setEnglishText(e.target.value)}
-                        placeholder="Write down your secret thoughts or confidential diary logs here in plain English..."
-                        autoComplete="new-password"
-                        autoCorrect="off"
-                        autoCapitalize="none"
-                        spellCheck="false"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                        data-bwignore="true"
-                        data-bitwarden-ignore="true"
-                        data-dashlane-ignore="true"
-                        data-gramm="false"
-                        data-enable-grammarly="false"
-                        data-translate="no"
-                        translate="no"
-                        className="notranslate flex-1 w-full bg-transparent resize-none focus:outline-none text-stone-200 placeholder:text-stone-600 font-serif leading-relaxed text-base"
-                      />
-                    </>
-                  )}
+                  <textarea
+                    name={fieldToken + "_text"}
+                    id={fieldToken + "_text"}
+                    value={englishText}
+                    onChange={(e) => setEnglishText(e.target.value)}
+                    placeholder="Write down your secret thoughts or confidential diary logs here in plain English..."
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="none"
+                    spellCheck="false"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-bwignore="true"
+                    data-bitwarden-ignore="true"
+                    data-dashlane-ignore="true"
+                    data-gramm="false"
+                    data-enable-grammarly="false"
+                    data-translate="no"
+                    translate="no"
+                    className="notranslate flex-1 w-full bg-transparent overflow-y-auto pr-2 focus:outline-none text-stone-200 placeholder:text-stone-700 font-serif leading-relaxed text-base scrollbar-thin scrollbar-thumb-stone-800 scrollbar-track-transparent"
+                  />
                 </div>
 
                 {/* Mathematical Cryptic Output Area */}
-                <div className={`bg-stone-950 border border-amber-950/40 rounded-2xl p-6 flex flex-col ${isWideArea ? 'h-[45vh] lg:h-[40vh] min-h-[300px]' : 'h-[65vh] min-h-[450px]'} relative overflow-hidden group`}>
+                <div className={`bg-stone-950 border border-amber-950/40 rounded-2xl p-6 flex flex-col ${isWideArea ? 'h-[55vh] lg:h-[50vh] min-h-[380px]' : 'h-[70vh] min-h-[500px]'} relative overflow-hidden group`}>
                   <div className="absolute inset-0 bg-amber-500/[0.01] pointer-events-none"></div>
                   
                   <div className="flex items-center justify-between mb-4 relative z-10">
@@ -801,16 +734,16 @@ export default function App() {
                     {outputViewMode === 'selectable' ? (
                       <textarea
                         readOnly
-                        value={(entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : ""}
+                        value={encodedText}
                         placeholder="Your dynamically converted mathematical secret cipher will render here automatically..."
-                        className="notranslate w-full h-full bg-stone-900/10 border border-amber-950/20 rounded-xl p-4 font-mono text-amber-400 leading-relaxed text-base select-text whitespace-pre-wrap break-all outline-none focus:outline-none resize-none selection:bg-amber-500/30 selection:text-amber-100"
+                        className="notranslate w-full h-full bg-stone-900/10 border border-amber-950/20 rounded-xl p-4 font-mono text-amber-400 leading-relaxed text-base select-text whitespace-pre-wrap break-all outline-none focus:outline-none overflow-y-auto selection:bg-amber-500/30 selection:text-amber-100"
                         translate="no"
                         spellCheck="false"
                       />
                     ) : (
                       <div className="notranslate w-full h-full p-4 rounded-xl bg-stone-900/10 border border-amber-950/20 overflow-y-auto" translate="no">
                         <CanvasText 
-                          text={(entryTitle || englishText) ? ((encodedTitle ? encodedTitle + "\n\n" : "") + encodedText) : ""}
+                          text={encodedText}
                           placeholder="Your dynamically converted mathematical secret cipher will render here automatically..."
                           font="400 16px 'JetBrains Mono', monospace"
                           color="#fcd34d"
@@ -920,87 +853,45 @@ export default function App() {
 
                   {/* Paste Box */}
                   <div className="space-y-3">
-                    {isKeystrokeShieldActive ? (
-                      <div 
-                        onClick={() => cipherHiddenRef.current?.focus()}
-                        className={`w-full h-24 bg-stone-950 border rounded-xl p-3 text-xs text-amber-300 font-mono resize-none leading-relaxed overflow-y-auto cursor-text relative transition-all duration-150 ${isCipherFocused ? 'border-amber-500/25 ring-1 ring-amber-500/10' : 'border-stone-850'}`}
+                    <textarea
+                      placeholder="Paste secret cipher text here to reverse translate mathematically..."
+                      name={fieldToken + "_cipher"}
+                      id={fieldToken + "_cipher"}
+                      value={pasteCipherText}
+                      onChange={(e) => setPasteCipherText(e.target.value)}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="none"
+                      spellCheck="false"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      data-bitwarden-ignore="true"
+                      data-dashlane-ignore="true"
+                      data-gramm="false"
+                      data-enable-grammarly="false"
+                      data-translate="no"
+                      translate="no"
+                      className="notranslate w-full h-24 bg-stone-950 border border-stone-850 rounded-xl p-3 text-xs focus:outline-none focus:border-amber-500/30 text-amber-300 font-mono placeholder:text-stone-700 overflow-y-auto pr-2 leading-relaxed transition-colors"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleDirectPasteDecode}
+                        disabled={!pasteCipherText.trim()}
+                        className="flex-1 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-800 disabled:text-stone-500 text-stone-950 font-bold text-xs py-2.5 rounded-xl transition shadow-sm active:scale-[0.98]"
                       >
-                        <CanvasText 
-                          text={pasteCipherText} 
-                          placeholder="Paste secret cipher text here using secure RAM Keystroke Shield..." 
-                          font="400 12px 'JetBrains Mono', monospace" 
-                          color="#fcd34d"
-                          showCursor={isCipherFocused}
-                        />
-                        
-                        {/* 100% Uncontrolled hidden textarea for dynamic cipher paste reading */}
-                        <textarea
-                          ref={cipherHiddenRef}
-                          defaultValue=""
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val) {
-                              setPasteCipherText(prev => prev + val);
-                            }
-                            e.target.value = ''; // Instantly wipe DOM footprint
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Backspace') {
-                              e.preventDefault();
-                              setPasteCipherText(prev => prev.slice(0, -1));
-                            } else if (e.key === 'Enter') {
-                              e.preventDefault();
-                              setPasteCipherText(prev => prev + '\n');
-                            } else if (e.key === ' ') {
-                              e.preventDefault();
-                              setPasteCipherText(prev => prev + ' ');
-                            }
-                          }}
-                          onFocus={() => setIsCipherFocused(true)}
-                          onBlur={() => setIsCipherFocused(false)}
-                          className="absolute w-px h-px opacity-0 pointer-events-none left-0 top-0 select-none resize-none"
-                          autoComplete="off"
-                          autoCorrect="off"
-                          autoCapitalize="none"
-                          spellCheck="false"
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          data-bwignore="true"
-                          data-bitwarden-ignore="true"
-                          data-dashlane-ignore="true"
-                          data-gramm="false"
-                        />
-                      </div>
-                    ) : (
-                      <textarea
-                        placeholder="Paste secret cipher text here to reverse translate mathematically..."
-                        name={fieldToken + "_cipher"}
-                        id={fieldToken + "_cipher"}
-                        value={pasteCipherText}
-                        onChange={(e) => setPasteCipherText(e.target.value)}
-                        autoComplete="new-password"
-                        autoCorrect="off"
-                        autoCapitalize="none"
-                        spellCheck="false"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                        data-bwignore="true"
-                        data-bitwarden-ignore="true"
-                        data-dashlane-ignore="true"
-                        data-gramm="false"
-                        data-enable-grammarly="false"
-                        data-translate="no"
-                        translate="no"
-                        className="notranslate w-full h-24 bg-stone-950 border border-stone-850 rounded-xl p-3 text-xs focus:outline-none text-amber-300 font-mono placeholder:text-stone-600 resize-none leading-relaxed"
-                      />
-                    )}
-                    <button
-                      onClick={handleDirectPasteDecode}
-                      disabled={!pasteCipherText.trim()}
-                      className="w-full border border-stone-800 hover:bg-stone-800/80 hover:border-stone-700/50 text-stone-200 font-semibold text-xs py-2.5 rounded-xl transition"
-                    >
-                      Decode Pasted Text
-                    </button>
+                        Decode Pasted Text
+                      </button>
+                      <button
+                        onClick={handlePasteFromClipboard}
+                        type="button"
+                        className="px-4 bg-stone-900 border border-stone-800 hover:border-stone-700 hover:text-stone-100 text-stone-300 rounded-xl text-xs transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                        title="Paste from clipboard"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Paste</span>
+                      </button>
+                    </div>
                   </div>
 
                   {errorMsg && (
@@ -1026,19 +917,21 @@ export default function App() {
                     
                     {decodedResult ? (
                       <div className="flex-1 flex flex-col justify-between space-y-6">
-                        <div className="space-y-1 flex-1">
+                        <div className="space-y-1 flex-1 flex flex-col">
                           <span className="text-[9px] font-mono text-stone-500 block uppercase tracking-wide">Decrypted English text</span>
-                          <div className="notranslate text-base font-serif text-stone-200 leading-relaxed font-medium h-32" translate="no">
+                          <div className="notranslate text-base font-serif text-stone-200 leading-relaxed font-medium h-[25vh] md:h-[40vh] min-h-[160px] flex flex-col" translate="no">
                             {outputViewMode === 'selectable' ? (
                               <textarea
                                 readOnly
                                 value={decodedResult.decoded}
-                                className="w-full h-full bg-stone-900/10 border border-amber-950/10 rounded-xl p-3 font-serif text-stone-200 leading-relaxed text-base select-text whitespace-pre-wrap break-words outline-none focus:outline-none resize-none selection:bg-amber-500/20 selection:text-amber-200"
+                                className="w-full h-full bg-stone-900/10 border border-amber-950/10 rounded-xl p-3 font-serif text-stone-200 leading-relaxed text-base select-text whitespace-pre-wrap break-words outline-none focus:outline-none overflow-y-auto pr-2 selection:bg-amber-500/20 selection:text-amber-200"
                                 translate="no"
                                 spellCheck="false"
                               />
                             ) : (
-                              <CanvasText text={decodedResult.decoded} font="500 16px Cinzel, ui-serif, serif" color="#e7e5e4" />
+                              <div className="w-full h-full overflow-y-auto pr-2">
+                                <CanvasText text={decodedResult.decoded} font="500 16px Cinzel, ui-serif, serif" color="#e7e5e4" />
+                              </div>
                             )}
                           </div>
                         </div>
