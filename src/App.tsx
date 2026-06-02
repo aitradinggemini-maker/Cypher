@@ -57,6 +57,25 @@ export default function App() {
   const [isWipedAutomatically, setIsWipedAutomatically] = useState(false);
   const [clipboardCountdown, setClipboardCountdown] = useState<number | null>(null);
 
+  // Customizable Security Wiping Policies (Defaults to completely manual user-controlled security to prevent unexpected vanishes)
+  const [idleWipeTime, setIdleWipeTime] = useState<number>(0); // 0 = Off (Manual Only)
+  const [wipeOnHide, setWipeOnHide] = useState<boolean>(false);
+  const [wipeOnTabChange, setWipeOnTabChange] = useState<boolean>(false);
+
+  // Sync references to keep event listeners stable and always access the actual state
+  const idleWipeTimeRef = useRef(idleWipeTime);
+  idleWipeTimeRef.current = idleWipeTime;
+  const wipeOnHideRef = useRef(wipeOnHide);
+  wipeOnHideRef.current = wipeOnHide;
+  const englishTextRef = useRef(englishText);
+  englishTextRef.current = englishText;
+  const entryTitleRef = useRef(entryTitle);
+  entryTitleRef.current = entryTitle;
+  const pasteCipherTextRef = useRef(pasteCipherText);
+  pasteCipherTextRef.current = pasteCipherText;
+  const decodedResultRef = useRef(decodedResult);
+  decodedResultRef.current = decodedResult;
+
   // PWA Installation hooks for Android/iOS native standalone wrappers
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
@@ -156,11 +175,22 @@ export default function App() {
   const resetIdleTimer = () => {
     if (idleRef.current) clearTimeout(idleRef.current);
     setIsWipedAutomatically(false);
+    
+    // If auto-wipe is set to Off (or manual), do not schedule a timer
+    if (idleWipeTimeRef.current === 0) return;
+
     idleRef.current = setTimeout(() => {
-      // 60 seconds of zero interaction shreds RAM session states completely
-      handleShredMemory();
-      setIsWipedAutomatically(true);
-    }, 60000);
+      // Only wipe if there's actual typed content in memory to purge
+      if (
+        englishTextRef.current || 
+        entryTitleRef.current || 
+        pasteCipherTextRef.current || 
+        decodedResultRef.current
+      ) {
+        handleShredMemory();
+        setIsWipedAutomatically(true);
+      }
+    }, idleWipeTimeRef.current);
   };
 
   // --- 3. Persistent Console Purge & Visibility Events ---
@@ -177,31 +207,38 @@ export default function App() {
     events.forEach((event) => window.addEventListener(event, resetIdleTimer));
     resetIdleTimer();
 
-    // Visibility Listener: immediately Shred Memory if tab is hidden (Chrome minimized, locked screen, etc)
+    // Visibility Listener: immediately Shred Memory if tab is hidden AND wipeOnHide is enabled
     const handleVisibilityChange = () => {
-      if (document.hidden) {
+      if (wipeOnHideRef.current && document.hidden) {
         handleShredMemory();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Double-insurance unload event scrubbing
-    window.addEventListener('beforeunload', handleShredMemory);
-    window.addEventListener('unload', handleShredMemory);
+    // Unload/minimization cleanup: only triggers if wipeOnHide is enabled
+    const handleUnloadShred = () => {
+      if (wipeOnHideRef.current) {
+        handleShredMemory();
+      }
+    };
+    window.addEventListener('beforeunload', handleUnloadShred);
+    window.addEventListener('unload', handleUnloadShred);
 
     return () => {
       if (idleRef.current) clearTimeout(idleRef.current);
       if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
       events.forEach((event) => window.removeEventListener(event, resetIdleTimer));
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleShredMemory);
-      window.removeEventListener('unload', handleShredMemory);
+      window.removeEventListener('beforeunload', handleUnloadShred);
+      window.removeEventListener('unload', handleUnloadShred);
     };
-  }, []);
+  }, [idleWipeTime]); // Re-attach when wipe time policy transitions
 
-  // When tab is changed, wipe states and destroy cached footprints to preserve transient nature
+  // When tab is changed, wipe states only if wipeOnTabChange is enabled
   const handleTabChange = (tab: 'write' | 'read') => {
-    handleShredMemory();
+    if (wipeOnTabChange) {
+      handleShredMemory();
+    }
     setActiveTab(tab);
   };
 
@@ -407,7 +444,7 @@ export default function App() {
           <div className="mb-6 bg-red-950/20 border border-red-900/40 text-red-400 p-3.5 rounded-xl text-xs flex justify-between items-center animate-pulse">
             <div className="flex gap-2.5 items-center">
               <ShieldAlert className="w-4 h-4 shrink-0" strokeWidth={2.5} />
-              <span>Idle Scrub Timeout: English text & decoded output were automatically shredded from RAM due to 60 seconds of inactivity.</span>
+              <span>Idle Scrub Timeout: English text & decoded output were automatically shredded from RAM due to {idleWipeTime === 60000 ? "1 minute" : idleWipeTime / 60000 + " minutes"} of inactivity.</span>
             </div>
             <button onClick={() => setIsWipedAutomatically(false)} className="text-stone-400 hover:text-stone-200 text-[10px] font-bold px-2 py-1 rounded bg-stone-900 border border-stone-850">
               Dismiss
@@ -439,7 +476,7 @@ export default function App() {
 
         {/* Security Control Console */}
         <div className="mb-6 bg-stone-900/40 border border-stone-850 rounded-2xl p-6 space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             
             {/* 1. Encryption Passcode */}
             <div className="flex flex-col space-y-2">
@@ -465,29 +502,71 @@ export default function App() {
                   {showPasscode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              <p className="text-[10px] text-stone-500">Determines the mathematical mapping output. Keep this safe to guarantee decodability.</p>
+              <p className="text-[10px] text-stone-500">Determines character layout shift outputs. Keep this safe to guarantee decodability.</p>
             </div>
 
-            {/* 2. Security Configuration Posture Status */}
-            <div className="flex flex-col space-y-3 justify-center">
-              <span className="text-xs font-bold text-stone-350 uppercase tracking-wider flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5 text-amber-500" />
-                Secure Posture Details
-              </span>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="bg-stone-950/60 p-2.5 rounded-xl border border-stone-850 flex flex-col justify-center">
-                  <span className="text-[9px] text-stone-500 block font-bold uppercase tracking-wider">Protocol</span>
-                  <span className="text-[11px] font-semibold text-amber-400">Pen & Paper (OTP)</span>
-                </div>
-                <div className="bg-stone-950/60 p-2.5 rounded-xl border border-stone-850 flex flex-col justify-center">
-                  <span className="text-[9px] text-stone-500 block font-bold uppercase tracking-wider">Copy Shield</span>
-                  <span className="text-[11px] font-semibold text-stone-300">Selectable Text</span>
-                </div>
-                <div className="bg-stone-950/60 p-2.5 rounded-xl border border-stone-850 flex flex-col justify-center">
-                  <span className="text-[9px] text-stone-500 block font-bold uppercase tracking-wider">Density</span>
-                  <span className="text-[11px] font-semibold text-stone-300">Wide Stacked</span>
-                </div>
+            {/* 2. Auto-Wipe Timer Policy */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-xs font-bold text-stone-350 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                Auto-Wipe Idle Timer
+              </label>
+              <div className="flex bg-stone-950 p-1 rounded-xl border border-stone-800 h-[38px] w-full">
+                <button
+                  type="button"
+                  onClick={() => setIdleWipeTime(0)}
+                  className={`flex-1 text-[10px] font-bold rounded-lg transition-all ${idleWipeTime === 0 ? 'bg-amber-600 text-stone-950 shadow-md font-extrabold' : 'text-stone-400 hover:text-stone-200'}`}
+                  title="Memory is NEVER wiped automatically due to idle posture. Retains written text reliably!"
+                >
+                  Off (Retain)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIdleWipeTime(60000)}
+                  className={`flex-1 text-[10px] font-bold rounded-lg transition-all ${idleWipeTime === 60000 ? 'bg-amber-600 text-stone-950 shadow-md font-extrabold' : 'text-stone-400 hover:text-stone-200'}`}
+                  title="Automatically shreds memory after 60 seconds of complete idle posture."
+                >
+                  1 Min
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIdleWipeTime(300000)}
+                  className={`flex-1 text-[10px] font-bold rounded-lg transition-all ${idleWipeTime === 300000 ? 'bg-amber-600 text-stone-950 shadow-md font-extrabold' : 'text-stone-400 hover:text-stone-200'}`}
+                  title="Automatically shreds memory after 5 minutes of complete idle posture."
+                >
+                  5 Min
+                </button>
               </div>
+              <p className="text-[10px] text-stone-500">Prevents background shoulder surfing in empty rooms.</p>
+            </div>
+
+            {/* 3. Ambient Exit & Move Shields */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-xs font-bold text-stone-350 uppercase tracking-wider flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-amber-500" />
+                Abrupt Exit Protection
+              </label>
+              <div className="grid grid-cols-2 gap-2 h-[38px]">
+                <button
+                  type="button"
+                  onClick={() => setWipeOnHide(!wipeOnHide)}
+                  className={`flex items-center justify-center gap-1 px-2.5 rounded-xl border text-[9px] font-bold tracking-tight transition-all duration-150 ${wipeOnHide ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-stone-950 border-stone-850 text-stone-400 hover:text-stone-200'}`}
+                  title="Purges memory when browser tab is hidden or minimized."
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${wipeOnHide ? 'bg-amber-400' : 'bg-stone-600'}`}></span>
+                  Wipe on Tab Blur
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWipeOnTabChange(!wipeOnTabChange)}
+                  className={`flex items-center justify-center gap-1 px-2.5 rounded-xl border text-[9px] font-bold tracking-tight transition-all duration-150 ${wipeOnTabChange ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-stone-950 border-stone-850 text-stone-400 hover:text-stone-200'}`}
+                  title="Purges memory when you click other tabs within this diary website."
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${wipeOnTabChange ? 'bg-amber-400' : 'bg-stone-600'}`}></span>
+                  Wipe on Tab Switch
+                </button>
+              </div>
+              <p className="text-[10px] text-stone-500 font-mono">Controls data persistence inside RAM sandbox.</p>
             </div>
 
           </div>
