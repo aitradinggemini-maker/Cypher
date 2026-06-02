@@ -66,6 +66,8 @@ export default function App() {
   idleWipeTimeRef.current = idleWipeTime;
   const wipeOnHideRef = useRef(wipeOnHide);
   wipeOnHideRef.current = wipeOnHide;
+  const wipeOnTabChangeRef = useRef(wipeOnTabChange);
+  wipeOnTabChangeRef.current = wipeOnTabChange;
   const englishTextRef = useRef(englishText);
   englishTextRef.current = englishText;
   const entryTitleRef = useRef(entryTitle);
@@ -74,6 +76,8 @@ export default function App() {
   pasteCipherTextRef.current = pasteCipherText;
   const decodedResultRef = useRef(decodedResult);
   decodedResultRef.current = decodedResult;
+  const passcodeRef = useRef(passcode);
+  passcodeRef.current = passcode;
 
   // PWA Installation hooks for Android/iOS native standalone wrappers
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -158,6 +162,7 @@ export default function App() {
     setSelectedImage(null);
     setPreviewUrl(null);
     setDecodedResult(null);
+    setPasscode('');
     destructAllBrowserFootprints();
   };
 
@@ -169,12 +174,13 @@ export default function App() {
     if (idleWipeTimeRef.current === 0) return;
 
     idleRef.current = setTimeout(() => {
-      // Only wipe if there's actual typed content in memory to purge
+      // Only wipe if there's actual typed content or an encryption token in memory to purge
       if (
         englishTextRef.current || 
         entryTitleRef.current || 
         pasteCipherTextRef.current || 
-        decodedResultRef.current
+        decodedResultRef.current ||
+        passcodeRef.current
       ) {
         handleShredMemory();
         setIsWipedAutomatically(true);
@@ -196,13 +202,19 @@ export default function App() {
     events.forEach((event) => window.addEventListener(event, resetIdleTimer));
     resetIdleTimer();
 
-    // Visibility Listener: immediately Shred Memory if tab is hidden AND wipeOnHide is enabled
+    // Visibility/Focus Listener: immediately Shred Memory if tab is hidden/blurred AND wipeOnHide is enabled
     const handleVisibilityChange = () => {
       if (wipeOnHideRef.current && document.hidden) {
         handleShredMemory();
       }
     };
+    const handleTabBlur = () => {
+      if (wipeOnHideRef.current) {
+        handleShredMemory();
+      }
+    };
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleTabBlur);
 
     // Unload/minimization cleanup: only triggers if wipeOnHide is enabled
     const handleUnloadShred = () => {
@@ -218,6 +230,7 @@ export default function App() {
       if (clipIntervalRef.current) clearInterval(clipIntervalRef.current);
       events.forEach((event) => window.removeEventListener(event, resetIdleTimer));
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleTabBlur);
       window.removeEventListener('beforeunload', handleUnloadShred);
       window.removeEventListener('unload', handleUnloadShred);
     };
@@ -225,7 +238,7 @@ export default function App() {
 
   // When tab is changed, wipe states only if wipeOnTabChange is enabled
   const handleTabChange = (tab: 'write' | 'read') => {
-    if (wipeOnTabChange) {
+    if (wipeOnTabChangeRef.current) {
       handleShredMemory();
     }
     setActiveTab(tab);
@@ -528,7 +541,7 @@ export default function App() {
                   placeholder="e.g. secret-topic-key"
                   className="w-full bg-stone-950 border border-stone-800 rounded-xl pl-3 pr-10 py-2.5 text-xs text-amber-500 font-mono outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all font-bold placeholder:text-stone-700"
                   spellCheck="false"
-                  autoComplete="off"
+                  autoComplete="new-password"
                 />
                 <button
                   type="button"
@@ -587,7 +600,7 @@ export default function App() {
                   type="button"
                   onClick={() => setWipeOnHide(!wipeOnHide)}
                   className={`flex items-center justify-center gap-1 px-2.5 rounded-xl border text-[9px] font-bold tracking-tight transition-all duration-150 ${wipeOnHide ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-stone-950 border-stone-850 text-stone-400 hover:text-stone-200'}`}
-                  title="Purges memory when browser tab is hidden or minimized."
+                  title="Purges layout memory, inputs, and the encryption token when browser tab is blurred, minimized, or closed."
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${wipeOnHide ? 'bg-amber-400' : 'bg-stone-600'}`}></span>
                   Wipe on Tab Blur
@@ -596,7 +609,7 @@ export default function App() {
                   type="button"
                   onClick={() => setWipeOnTabChange(!wipeOnTabChange)}
                   className={`flex items-center justify-center gap-1 px-2.5 rounded-xl border text-[9px] font-bold tracking-tight transition-all duration-150 ${wipeOnTabChange ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-stone-950 border-stone-850 text-stone-400 hover:text-stone-200'}`}
-                  title="Purges memory when you click other tabs within this diary website."
+                  title="Purges layout memory, inputs, and the encryption token when you click other tabs within this diary website."
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${wipeOnTabChange ? 'bg-amber-400' : 'bg-stone-600'}`}></span>
                   Wipe on Tab Switch
